@@ -1,6 +1,36 @@
 # utl-flag-the-visit-with-the-first-occurence-of-the-maximum-result-sql-dow-sort-relational
-Flag the visit with the first occurence of the maximum result sql dow sort relational
     Flag the visit with the first occurance of the maximum result sql dow sort relational
+
+    Improved Solutions
+
+          5. Mark -No index needed. Use Record Id and poiunt=record id to modily master
+             Keintz, Mark @  mkeintz@wharton.upenn.edu
+
+                Identify record ids 50 seconds
+                Modify maste         0 seconds
+                                    ===========
+                                     50 seconds
+
+          6. Paull - DATA DOES NOT HAVE TO BE SORTED
+
+                Paul Dorfman @ sashole@bellsouth.net
+
+                HASH                72 Seconds
+                MODIFY               0 Seconds
+
+          7. Bart - Nice addition 'CUROBS' to prevent possible corruption of master when using 'modify'.
+             There is not rollback with 'modify?'
+             Bartosz Jablonski    yabwon@gmail.com
+             May also be able to do someting along the lines of.
+             if _iorc_ then do;
+                _error_=0;
+                ** put system message and any user messaging;
+                leave;
+             end;
+
+                HASH                90 Seconds    * not sure exactly why this took longer;
+                MODIFY               0 Seconds
+
 
     github
     https://tinyurl.com/ycnoshxp
@@ -152,7 +182,7 @@ Flag the visit with the first occurence of the maximum result sql dow sort relat
      delete want have;
     run;quit;
 
-    data have(sortedby=rid index=(rid/unique)) ;
+    data have(sortedby=rid /* index=(rid/unique) */) ;
       retain rid 0 flag 'N';
       length visit id 3 test $3;
       input id test$  visit  result ;
@@ -329,6 +359,183 @@ Flag the visit with the first occurence of the maximum result sql dow sort relat
     quit;
 
 
+
+    5. Mark -No index needed. Use Record Id and poiunt=record id to modily master
+       Keintz, Mark @  mkeintz@wharton.upenn.edu
+       ---------------------------------------------------------------------------
+
+          Identify record ids 50 seconds
+          Modify maste         0 seconds
+                              ===========
+                              50 seconds
+
+    %let beg=%sysfunc(time());
+
+    data need (keep=rid);
+      set have;
+      by id test;
+      if first.test then do;_max=result; rid=_n_;end;
+      retain _max rid;
+      if result>_max then do;_max=result; rid=_n_;end;
+      if last.test;
+    run;
+
+    data have;
+      set need;
+      modify have point=rid;
+      flag='Y';
+      replace;
+    run;
+
+    %put %sysevalf( %sysfunc(time()) - &beg );
+
+    NOTE: There were 450000000 observations read from the data set WORK.HAVE.
+    NOTE: The data set WORK.NEED has 4 observations and 1 variables.
+    NOTE: DATA statement used (Total process time):
+          real time           50.18 seconds
+          cpu time            49.88 seconds
+
+
+    89    data have;
+    90      set need;
+    91      modify have point=rid;
+    92      flag='Y';
+    93      replace;
+    94    run;
+
+    NOTE: The variable RID exists on an input data set, but was also specified in an I/O statement option.
+    NOTE: There were 4 observations read from the data set WORK.NEED.
+    NOTE: The data set WORK.HAVE has been updated.  There were 4 observations rewritten, 0 observations added and 0
+    NOTE: DATA statement used (Total process time):
+          real time           0.03 seconds
+          cpu time            0.00 seconds
+
+
+    6. Paull - DATA DOES NOT HAVE TO BE SORTED
+    -------------------------------------------
+
+          Paul Dorfman @ sashole@bellsouth.net
+
+          HASH                72 Seconds
+          MODIFY               0 Seconds
+
+
+    The main drag here is the need for two passes through the data.
+    That can be eliminated by using a small hash (small because by design it will contain
+    only a single item from each [id,test] key group):
+
+    %let beg=%sysfunc(time());
+
+    data _null_ ;
+      dcl hash h () ;
+      h.definekey ("id", "test") ;
+      h.definedata ("res", "vis", "rid") ;
+      h.definedone () ;
+      do _n_ = 1 by 1 until (z) ;
+        set have end = z ;
+        f = h.find() ;
+        if f ne 0 or (f = 0 and (result > res or (result = res and visit < vis))) then do ;
+          res = result ;
+          vis = visit ;
+          rid = _n_ ;
+          h.replace() ;
+        end ;
+      end ;
+      h.output (dataset: "rid (keep = rid)") ;
+    run ;
+
+    data have ;
+      set rid ;
+      modify have point = rid ;
+      flag = "Y" ;
+      replace ;
+    run ;
+
+    %put %sysevalf( %sysfunc(time()) - &beg );
+
+    Note that the above approach doesn't presume the input either sorted or indexed,
+    and it does the whole job in a single pass. I've tested it against the 450,000,000
+    input records (on a 10 year old ThinkPad laptop I'm using to type this) and got 72
+    seconds for the hash step and 0 (but of course) seconds for the MODIFY step.
+    I'd be interested to know how it fares against the other techniques on your awesome hardware.
+
+
+    NOTE: The data set WORK.RID has 4 observations and 1 variables.
+    NOTE: There were 450000000 observations read from the data set WORK.HAVE.
+    NOTE: DATA statement used (Total process time):
+         real time           1:11.77
+         cpu time            1:11.24
+
+
+
+    14   data have ;
+    15     set rid ;
+    16     modify have point = rid ;
+    17     flag = "Y" ;
+    18     replace ;
+    19   run ;
+
+    NOTE: The variable RID exists on an input data set, but was also specified in an I/O statement
+    NOTE: There were 4 observations read from the data set WORK.RID.
+    NOTE: The data set WORK.HAVE has been updated.  There were 4 observations rewritten, 0 observat
+    NOTE: DATA statement used (Total process time):
+         real time           0.01 seconds
+         cpu time            0.01 second
+
+
+
+    20   %put %sysevalf( %sysfunc(time()) - &beg );
+    71.7910001277996
+
+
+
+    7. Bart - Nice addition 'CUROBS' to prevent possible corruption of master when using 'modfy'.
+       There is not rollback with 'modify?'
+       Bartosz Jablonski    yabwon@gmail.com
+       -----------------------------------------------------------------------------------------
+
+
+
+    If I may add small piece to "robustness"? Since there is is MODIFY in use
+    (i.e. programmer is capable to work with it), there could be MODIFY & DELETE in use,
+    so I would add CUROBS= option, to be sure that read rid is ok.
+
+    all the best
+    Bart
+
+    data _null_ ;
+      dcl hash h () ;
+      h.definekey ("id", "test") ;
+      h.definedata ("res", "vis", "rid") ;
+      h.definedone () ;
+      do _n_ = 1 by 1 until (z) ;
+        set have end = z CUROBS=CUROBS ;
+        f = h.find() ;
+        if f ne 0 or (f = 0 and (result > res or (result = res and visit < vis))) then do ;
+          res = result ;
+          vis = visit ;
+          rid = CUROBS ; /* instead of _n_ */
+
+          h.replace() ;
+        end ;
+      end ;
+      h.output (dataset: "rid (keep = rid)") ;
+    run ;
+
+
+    if _iorc_ then do;
+       _error_=0;
+       ** put system message and any user messaging;
+       leave;
+    end;
+
+    NOTE: The data set WORK.RID has 4 observations and 1 variables.
+    NOTE: There were 450000000 observations read from the data set WORK.HAVE.
+    NOTE: DATA statement used (Total process time):
+          real time           1:30.26
+          cpu time            1:29.57
+
+
     OUTPUT
 
      see above
@@ -373,5 +580,4 @@ Flag the visit with the first occurence of the maximum result sql dow sort relat
     102 wbc 5 400
     ;;;;
     run;quit;
-
 
